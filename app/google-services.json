@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1042004405475",
+    "project_id": "smartcare-9063c",
+    "storage_bucket": "smartcare-9063c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1042004405475:android:8f6ff31adf011ad869e9d6",
+        "android_client_info": {
+          "package_name": "com.example.smartcare"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDrxa7O9zOcat9rC0d8poOvBnuUWVJczyc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
