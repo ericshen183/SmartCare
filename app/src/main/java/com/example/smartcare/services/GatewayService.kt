@@ -15,8 +15,8 @@ import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import com.example.smartcare.ble.*
+import com.example.smartcare.cloud.FirebaseManager
 import com.google.android.gms.location.*
-import com.google.firebase.database.FirebaseDatabase
 import java.util.*
 
 class GatewayService : Service() {
@@ -29,14 +29,14 @@ class GatewayService : Service() {
     private var lastRelayTime = 0L
     private val mainHandler = Handler(Looper.getMainLooper())
     
-    private val databaseUrl = "https://smartcare-9063c-default-rtdb.firebaseio.com/"
-    private val db by lazy { FirebaseDatabase.getInstance(databaseUrl).getReference("vitals") }
+    private val firebaseManager by lazy { FirebaseManager.getInstance() }
 
     private var currentHr = 0
     private var currentLat = 0.0
     private var currentLng = 0.0
     private var currentIsFall = false
     private var currentSteps = 0
+    private var currentDistance = 0
     private var isConnected = false
     private var connectionStateText = "Disconnected"
 
@@ -44,7 +44,7 @@ class GatewayService : Service() {
     private var dataListener: OnDataUpdateListener? = null
 
     interface OnDataUpdateListener {
-        fun onDataUpdate(hr: Int, steps: Int, lat: Double, lng: Double, isFall: Boolean, connStatus: String)
+        fun onDataUpdate(hr: Int, steps: Int, distance: Int, lat: Double, lng: Double, isFall: Boolean, connStatus: String)
     }
 
     inner class LocalBinder : Binder() {
@@ -58,31 +58,36 @@ class GatewayService : Service() {
 
         bleManager = BleManager(
             context = this,
-            // In GatewayService.kt inside onCreate() -> BleManager initialization
             onReady = {
                 Log.d("Gateway", "Handshake Ready - Initializing Watch Configuration")
                 isConnected = true
                 connectionStateText = "Connected & Ready"
 
-                // Sequential commands with delays to prevent buffer overflow on the watch
+                // Sequential commands
                 mainHandler.postDelayed({ bleManager.sendCommand(MoyoungEncoder.createHandshake()) }, 500)
                 mainHandler.postDelayed({ bleManager.sendCommand(MoyoungEncoder.createTimeSync()) }, 1500)
                 mainHandler.postDelayed({ bleManager.sendCommand(MoyoungEncoder.createUserInfoSync()) }, 2500)
                 mainHandler.postDelayed({ bleManager.sendCommand(MoyoungEncoder.createHrIntervalSync(5)) }, 3500)
                 mainHandler.postDelayed({ bleManager.sendCommand(MoyoungEncoder.createDynamicHrToggle(true)) }, 4500)
-
-                // CRITICAL: Explicitly start real-time vitals mode
                 mainHandler.postDelayed({ bleManager.sendCommand(MoyoungEncoder.createVitalsRealtime(true)) }, 5500)
-                mainHandler.postDelayed({ bleManager.sendCommand(MoyoungEncoder.createManualHrStart()) }, 6500)
+                mainHandler.postDelayed({ bleManager.sendCommand(MoyoungEncoder.createManualHrRequest()) }, 6500)
 
-                // Start the background polling loop for summary data (Steps/Sleep)
                 mainHandler.postDelayed({ startPolling() }, 8000)
-
+                relayData()
+            },
+            onConnectionStateChanged = { connected ->
+                isConnected = connected
+                connectionStateText = if (connected) "Connected" else "Disconnected (Watch Offline)"
+                if (!connected) {
+                    currentHr = 0
+                    showWatchDisconnectedNotification()
+                }
                 relayData()
             },
             onDataReceived = { update ->
                 if (update.heartRate > 0) currentHr = update.heartRate
                 if (update.steps > currentSteps) currentSteps = update.steps
+                if (update.distance > 0) currentDistance = update.distance
                 currentIsFall = update.isFallLikely
                 
                 val now = System.currentTimeMillis()
@@ -96,6 +101,27 @@ class GatewayService : Service() {
         )
 
         startIndependentLocationTracking()
+        
+        val wearerName = prefs.getString("wearer_name", null)
+        if (wearerName != null) {
+            firebaseManager.listenForCommands(wearerName) { type, value ->
+                handleRemoteCommand(type, value)
+            }
+        }
+    }
+
+    private fun handleRemoteCommand(type: String, value: Any) {
+        when (type) {
+            "notification" -> {
+                val msg = value as? String ?: ""
+                if (msg.isNotEmpty()) {
+                    bleManager.sendCommand(MoyoungEncoder.createNotification(msg))
+                }
+            }
+            "vitals_request" -> {
+                bleManager.sendCommand(MoyoungEncoder.createManualHrRequest())
+            }
+        }
     }
 
     private fun startIndependentLocationTracking() {
@@ -120,22 +146,14 @@ class GatewayService : Service() {
 
     private fun relayData() {
         mainHandler.post {
-            dataListener?.onDataUpdate(currentHr, currentSteps, currentLat, currentLng, currentIsFall, connectionStateText)
+            dataListener?.onDataUpdate(currentHr, currentSteps, currentDistance, currentLat, currentLng, currentIsFall, connectionStateText)
         }
 
         val rawName = prefs.getString("wearer_name", "Unknown") ?: "Unknown"
         val wearerName = rawName.filter { it.isLetterOrDigit() }
         if (wearerName.isEmpty()) return
 
-        val data = mapOf(
-            "heartRate" to currentHr,
-            "steps" to currentSteps,
-            "latitude" to currentLat,
-            "longitude" to currentLng,
-            "isFall" to currentIsFall,
-            "timestamp" to System.currentTimeMillis()
-        )
-        db.child(wearerName).setValue(data)
+        firebaseManager.updateVitals(wearerName, currentHr, currentSteps, currentLat, currentLng, currentIsFall)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -163,7 +181,6 @@ class GatewayService : Service() {
         timer?.schedule(object : TimerTask() {
             override fun run() {
                 if (isConnected) {
-                    // Poll for vitals - cycle through different methods supported by MoyoungEncoder
                     when (cycle % 4) {
                         0 -> bleManager.sendCommand(MoyoungEncoder.getSummaryRequest())
                         1 -> bleManager.sendCommand(MoyoungEncoder.createVitalsRealtime(true))
@@ -171,20 +188,34 @@ class GatewayService : Service() {
                         3 -> bleManager.sendCommand(MoyoungEncoder.queryLastDynamicRate())
                     }
                     cycle++
-                    
-                    if (currentHr == 0 && cycle % 3 == 0) {
-                        bleManager.sendCommand(MoyoungEncoder.createManualHrStart())
-                    }
                 }
             }
         }, 0, 8000)
+    }
+
+    fun requestManualHr() {
+        bleManager.sendCommand(MoyoungEncoder.createManualHrRequest())
     }
 
     fun sendWatchCommand(command: ByteArray) = bleManager.sendCommand(command)
     
     fun setOnDataUpdateListener(listener: OnDataUpdateListener?) { 
         this.dataListener = listener 
-        listener?.onDataUpdate(currentHr, currentSteps, currentLat, currentLng, currentIsFall, connectionStateText)
+        listener?.onDataUpdate(currentHr, currentSteps, currentDistance, currentLat, currentLng, currentIsFall, connectionStateText)
+    }
+
+    private fun showWatchDisconnectedNotification() {
+        val channelId = "watch_status_channel"
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel(channelId, "Watch Status", NotificationManager.IMPORTANCE_HIGH))
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("⚠️ WATCH DISCONNECTED")
+            .setContentText("The wearer's smartwatch has gone offline.")
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .build()
+        try { manager.notify(3, notification) } catch (_: SecurityException) {}
     }
 
     private fun showFallNotification() {
@@ -225,7 +256,7 @@ class GatewayService : Service() {
     override fun onDestroy() { 
         timer?.cancel()
         locationTimer?.cancel()
-        bleManager.disconnect()
+        bleManager.cleanup()
         super.onDestroy() 
     }
 }

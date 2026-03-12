@@ -36,7 +36,7 @@ class DashboardActivity : AppCompatActivity(), OnMapReadyCallback {
             isBound = true
             
             s.setOnDataUpdateListener(object : GatewayService.OnDataUpdateListener {
-                override fun onDataUpdate(hr: Int, steps: Int, lat: Double, lng: Double, isFall: Boolean, connStatus: String) {
+                override fun onDataUpdate(hr: Int, steps: Int, distance: Int, lat: Double, lng: Double, isFall: Boolean, connStatus: String) {
                     runOnUiThread { updateUI(hr, steps, lat, lng, isFall, connStatus) }
                 }
             })
@@ -112,9 +112,14 @@ class DashboardActivity : AppCompatActivity(), OnMapReadyCallback {
             gatewayService?.sendWatchCommand(cmd)
             Toast.makeText(this, "Watch alarm set", Toast.LENGTH_SHORT).show()
         }
+        binding.btnTestHr.setOnClickListener {
+            gatewayService?.requestManualHr()
+            Toast.makeText(this, "Requesting Heart Rate...", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun updateUI(hr: Int, steps: Int, lat: Double, lng: Double, isFall: Boolean, connStatus: String) {
+        android.util.Log.d("DashboardUI", "Received HR: $hr, Status: $connStatus")
         val hrDisplay = if (hr > 0) getString(R.string.bpm_format, hr) else getString(R.string.status_detecting)
         binding.hrText.text = hrDisplay
         binding.hrTextLarge.text = hrDisplay

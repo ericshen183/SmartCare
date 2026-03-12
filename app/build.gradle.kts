@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "com.example.smartcare"
-        minSdk = 26
+        minSdk = 36 
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -51,10 +51,10 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
     
     // Firebase
-    implementation(platform("com.google.firebase:firebase-bom:32.7.2"))
-    implementation("com.google.firebase:firebase-database-ktx")
+    implementation(platform("com.google.firebase:firebase-bom:33.10.0"))
+    implementation("com.google.firebase:firebase-database")
 
     // Google Maps & Location
     implementation("com.google.android.gms:play-services-maps:18.2.0")
-    implementation("com.google.android.gms:play-services-location:21.1.0")
+    implementation("com.google.android.gms:play-services-location:21.3.0")
 }

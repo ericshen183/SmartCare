@@ -93,6 +93,11 @@
                 android:text="@string/real_time_hr"
                 android:textSize="16sp"
                 android:textColor="#757575"/>
+            <Button
+                android:id="@+id/btnTestHr"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Start Manual HR" />
         </LinearLayout>
 
         <!-- Tab 2: Map -->

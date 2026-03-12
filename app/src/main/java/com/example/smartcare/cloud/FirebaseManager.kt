@@ -1,6 +1,5 @@
 package com.example.smartcare.cloud
 
-import com.example.smartcare.ble.MoyoungDecoder
 import com.google.firebase.database.FirebaseDatabase
 
 class FirebaseManager {
@@ -18,14 +17,14 @@ class FirebaseManager {
 
     /**
      * Pushes vitals and location to Firebase under a specific wearer's name.
-     * Use this if you want a centralized place for cloud management outside the service.
      */
-    fun updateVitals(wearerName: String, hr: Int, lat: Double, lng: Double, isFall: Boolean) {
-        // Sanitize name for Firebase path
+    fun updateVitals(wearerName: String, hr: Int, steps: Int, lat: Double, lng: Double, isFall: Boolean) {
         val sanitizedName = wearerName.replace(Regex("[.#$\\[\\] ]"), "").trim()
-        
+        if (sanitizedName.isEmpty()) return
+
         val data = mapOf(
             "heartRate" to hr,
+            "steps" to steps,
             "latitude" to lat,
             "longitude" to lng,
             "isFall" to isFall,
@@ -37,6 +36,8 @@ class FirebaseManager {
     // Listens for remote commands (e.g., from a web portal or caregiver app)
     fun listenForCommands(wearerName: String, onCommandReceived: (type: String, value: Any) -> Unit) {
         val sanitizedName = wearerName.replace(Regex("[.#$\\[\\] ]"), "").trim()
+        if (sanitizedName.isEmpty()) return
+        
         database.getReference("remote_commands").child(sanitizedName)
             .addValueEventListener(object : com.google.firebase.database.ValueEventListener {
                 override fun onDataChange(snapshot: com.google.firebase.database.DataSnapshot) {

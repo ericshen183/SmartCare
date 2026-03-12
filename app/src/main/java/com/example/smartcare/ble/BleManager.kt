@@ -1,7 +1,10 @@
 package com.example.smartcare.ble
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.*
-import android.content.Context
+import android.content.*
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -9,13 +12,18 @@ import android.util.Log
 import java.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
 
+@SuppressLint("MissingPermission")
 class BleManager(
     private val context: Context,
     private val onReady: () -> Unit,
+    private val onConnectionStateChanged: (Boolean) -> Unit,
     private val onDataReceived: (MoyoungDecoder.WatchUpdate) -> Unit
 ) {
 
     private var bluetoothGatt: BluetoothGatt? = null
+    private var writeCharacteristic: BluetoothGattCharacteristic? = null
+    private var pendingMac: String? = null
+    
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
     }
@@ -39,61 +47,77 @@ class BleManager(
         class WriteCharacteristic(val characteristic: BluetoothGattCharacteristic, val value: ByteArray) : BleOp()
     }
 
+    private val bondReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == BluetoothDevice.ACTION_BOND_STATE_CHANGED) {
+                val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE) as? BluetoothDevice
+                }
+                val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+                
+                if (device != null && device.address == pendingMac) {
+                    Log.d("BLE", "Bond state changed for $pendingMac to $bondState")
+                    if (bondState == BluetoothDevice.BOND_BONDED) {
+                        startGattConnection(device)
+                    }
+                }
+            }
+        }
+    }
+
+    init {
+        context.registerReceiver(bondReceiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             mainHandler.post {
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    Log.e("BLE", "GATT Error: status=$status. Disconnecting.")
+                    onConnectionStateChanged(false)
+                    disconnect()
+                    return@post
+                }
+
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    Log.d("BLE", "Connected. Initializing Secure Handshake Queue.")
+                    Log.d("BLE", "GATT Connected. Discovering services...")
+                    onConnectionStateChanged(true)
                     isBusy = false
                     isReadySignaled = false
                     operationQueue.clear()
-                    enqueue(BleOp.RequestMtu)
-                    enqueue(BleOp.DiscoverServices)
+                    
+                    mainHandler.postDelayed({
+                        enqueue(BleOp.RequestMtu)
+                        enqueue(BleOp.DiscoverServices)
+                    }, 1200)
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    Log.d("BLE", "Disconnected")
-                    isBusy = false
-                    operationQueue.clear()
+                    Log.d("BLE", "GATT Disconnected.")
+                    onConnectionStateChanged(false)
+                    disconnect()
                 }
             }
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            Log.d("BLE", "MTU confirmed: $mtu")
+            Log.d("BLE", "MTU: $mtu")
             operationFinished()
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            Log.d("BLE", "Services discovered: $status")
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                val service = gatt.getService(SERVICE_UUID)
-                val notifyChar = service?.getCharacteristic(CHARACTERISTIC_NOTIFY)
-                if (notifyChar != null) {
-                    Log.d("BLE", "Service and Notify Characteristic found. Enabling notifications.")
-                    
-                    // CRITICAL: Must enable notifications locally in Android's BLE stack
-                    try {
-                        gatt.setCharacteristicNotification(notifyChar, true)
-                    } catch (_: SecurityException) {
-                        Log.e("BLE", "SecurityException enabling notifications locally")
-                    }
-
-                    val descriptor = notifyChar.getDescriptor(CONFIG_DESCRIPTOR)
-                    if (descriptor != null) {
-                        enqueue(BleOp.WriteDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
-                    } else {
-                        Log.e("BLE", "Notification descriptor NOT found")
-                    }
-                } else {
-                    Log.e("BLE", "Moyoung Service/Notify Characteristic NOT found")
-                }
+                setupWatchProfile(gatt)
+            } else {
+                operationFinished()
             }
-            operationFinished()
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS && descriptor.uuid == CONFIG_DESCRIPTOR && !isReadySignaled) {
-                Log.d("BLE", "Notification descriptor written successfully.")
-                isReadySignaled = true
-                onReady()
+            if (status == BluetoothGatt.GATT_SUCCESS && descriptor.uuid == CONFIG_DESCRIPTOR) {
+                signalReady()
             }
             operationFinished()
         }
@@ -105,6 +129,7 @@ class BleManager(
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
             val update = MoyoungDecoder.decode(value)
             mainHandler.post { update?.let { onDataReceived(it) } }
+            Log.d("BLE_RAW", "Data [${value.size} bytes]: ${value.joinToString(" ") { "%02X".format(it) }} from ${characteristic.uuid.toString().substring(4,8)}")
         }
 
         @Suppress("OVERRIDE_DEPRECATION")
@@ -114,18 +139,66 @@ class BleManager(
         }
     }
 
+    private fun setupWatchProfile(gatt: BluetoothGatt) {
+        var foundNotify = false
+        writeCharacteristic = null
+
+        // Try to find the characteristics across all services
+        for (s in gatt.services) {
+            for (c in s.characteristics) {
+                val uuid = c.uuid.toString().lowercase()
+                
+                // Write characteristic: feea
+                if (uuid.contains("feea")) {
+                    writeCharacteristic = c
+                    Log.d("BLE", "Found Write Characteristic: $uuid")
+                }
+                
+                // Notify characteristics: fee8 or fee3 (from your capture)
+                if (uuid.contains("fee8") || uuid.contains("fee3")) {
+                    Log.d("BLE", "Found Notify Characteristic: $uuid. Enabling...")
+                    gatt.setCharacteristicNotification(c, true)
+                    c.getDescriptor(CONFIG_DESCRIPTOR)?.let {
+                        enqueue(BleOp.WriteDescriptor(it, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
+                        foundNotify = true
+                    }
+                }
+            }
+        }
+
+        if (writeCharacteristic == null) Log.e("BLE", "Write characteristic NOT FOUND")
+        if (!foundNotify) {
+            Log.w("BLE", "Notify characteristic NOT FOUND. Forcing ready state.")
+            signalReady()
+        }
+        
+        operationFinished()
+    }
+
+    private fun enableNotifications(gatt: BluetoothGatt, char: BluetoothGattCharacteristic) {
+        gatt.setCharacteristicNotification(char, true)
+        char.getDescriptor(CONFIG_DESCRIPTOR)?.let {
+            enqueue(BleOp.WriteDescriptor(it, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
+        }
+    }
+
+    private fun signalReady() {
+        if (!isReadySignaled) {
+            isReadySignaled = true
+            mainHandler.post { onReady() }
+        }
+    }
+
     private fun enqueue(op: BleOp) {
         operationQueue.add(op)
-        // Ensure processNext runs on the main thread to prevent race conditions on isBusy
         mainHandler.post { processNext() }
     }
 
     private fun operationFinished() {
-        // Essential 250ms gap to let the Bluetooth stack and watch reset between commands
-        mainHandler.postDelayed({
+        mainHandler.post {
             isBusy = false
             processNext()
-        }, 250)
+        }
     }
 
     private fun processNext() {
@@ -134,74 +207,76 @@ class BleManager(
         val gatt = bluetoothGatt ?: return
 
         isBusy = true
+        mainHandler.postDelayed({ if (isBusy) { isBusy = false; processNext() } }, 5000)
 
-        // Safety timeout to prevent queue stall if watch fails to respond
-        mainHandler.postDelayed({
-            if (isBusy) {
-                Log.w("BLE", "Operation timeout - skipping to next task")
-                operationFinished()
-            }
-        }, 2500)
-
-        val success = try {
+        try {
             when (op) {
-                is BleOp.RequestMtu -> gatt.requestMtu(247)
+                is BleOp.RequestMtu -> gatt.requestMtu(517)
                 is BleOp.DiscoverServices -> gatt.discoverServices()
-                is BleOp.WriteDescriptor -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        gatt.writeDescriptor(op.descriptor, op.value) == BluetoothStatusCodes.SUCCESS
-                    } else {
-                        @Suppress("DEPRECATION")
-                        op.descriptor.value = op.value
-                        @Suppress("DEPRECATION")
-                        gatt.writeDescriptor(op.descriptor)
-                    }
-                }
+                is BleOp.WriteDescriptor -> gatt.writeDescriptor(op.descriptor, op.value)
                 is BleOp.WriteCharacteristic -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        gatt.writeCharacteristic(op.characteristic, op.value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
-                    } else {
-                        @Suppress("DEPRECATION")
-                        op.characteristic.value = op.value
-                        @Suppress("DEPRECATION")
-                        op.characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                        @Suppress("DEPRECATION")
-                        gatt.writeCharacteristic(op.characteristic)
-                    }
+                    gatt.writeCharacteristic(
+                        op.characteristic,
+                        op.value,
+                        BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    )
                 }
             }
-        } catch (_: SecurityException) { false }
-
-        if (!success) operationFinished()
+        } catch (e: Exception) {
+            Log.e("BLE", "Op Error: ${e.message}")
+            isBusy = false
+            processNext()
+        }
     }
 
     fun sendCommand(data: ByteArray) {
-        val service = bluetoothGatt?.getService(SERVICE_UUID)
-        val writeChar = service?.getCharacteristic(CHARACTERISTIC_WRITE)
-        if (writeChar != null) {
-            enqueue(BleOp.WriteCharacteristic(writeChar, data))
+        val char = writeCharacteristic
+        if (char != null) {
+            enqueue(BleOp.WriteCharacteristic(char, data))
         } else {
-            Log.w("BLE", "Cannot send command - Write Characteristic not found")
+            Log.e("BLE", "Cannot send: Write char missing")
         }
     }
 
     fun connect(mac: String) {
-        val device = bluetoothAdapter?.getRemoteDevice(mac) ?: return
-        try {
-            Log.d("BLE", "Connecting to $mac")
-            bluetoothGatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        } catch (_: SecurityException) {
-            Log.e("BLE", "SecurityException during connectGatt")
+        if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
+        val adapter = bluetoothAdapter ?: return
+        if (!adapter.isEnabled) return
+        
+        pendingMac = mac
+        val device = adapter.getRemoteDevice(mac)
+        
+        if (device.bondState == BluetoothDevice.BOND_NONE) {
+            Log.d("BLE", "Initiating pairing...")
+            device.createBond()
+        } else {
+            startGattConnection(device)
         }
+    }
+
+    private fun startGattConnection(device: BluetoothDevice) {
+        disconnect()
+        mainHandler.postDelayed({
+            bluetoothGatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        }, 500)
     }
 
     fun disconnect() {
         try {
-            bluetoothGatt?.disconnect()
-            bluetoothGatt?.close()
-        } catch (_: SecurityException) {}
+            if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                bluetoothGatt?.disconnect()
+                bluetoothGatt?.close()
+            }
+        } catch (_: Exception) {}
         bluetoothGatt = null
+        writeCharacteristic = null
         operationQueue.clear()
         isBusy = false
+        isReadySignaled = false
+    }
+
+    fun cleanup() {
+        try { context.unregisterReceiver(bondReceiver) } catch (_: Exception) {}
+        disconnect()
     }
 }
