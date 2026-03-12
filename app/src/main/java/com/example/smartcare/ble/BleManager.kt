@@ -23,7 +23,7 @@ class BleManager(
     private var bluetoothGatt: BluetoothGatt? = null
     private var writeCharacteristic: BluetoothGattCharacteristic? = null
     private var pendingMac: String? = null
-    
+
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
     }
@@ -57,7 +57,7 @@ class BleManager(
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE) as? BluetoothDevice
                 }
                 val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
-                
+
                 if (device != null && device.address == pendingMac) {
                     Log.d("BLE", "Bond state changed for $pendingMac to $bondState")
                     if (bondState == BluetoothDevice.BOND_BONDED) {
@@ -88,7 +88,7 @@ class BleManager(
                     isBusy = false
                     isReadySignaled = false
                     operationQueue.clear()
-                    
+
                     mainHandler.postDelayed({
                         enqueue(BleOp.RequestMtu)
                         enqueue(BleOp.DiscoverServices)
@@ -129,7 +129,7 @@ class BleManager(
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
             val update = MoyoungDecoder.decode(value)
             mainHandler.post { update?.let { onDataReceived(it) } }
-            Log.d("BLE_RAW", "Data [${value.size} bytes]: ${value.joinToString(" ") { "%02X".format(it) }} from ${characteristic.uuid.toString().substring(4,8)}")
+            // Log.d("BLE_RAW", "Data: ${value.joinToString(" ") { "%02X".format(it) }}")
         }
 
         @Suppress("OVERRIDE_DEPRECATION")
@@ -143,20 +143,16 @@ class BleManager(
         var foundNotify = false
         writeCharacteristic = null
 
-        // Try to find the characteristics across all services
         for (s in gatt.services) {
             for (c in s.characteristics) {
                 val uuid = c.uuid.toString().lowercase()
-                
-                // Write characteristic: feea
+
                 if (uuid.contains("feea")) {
                     writeCharacteristic = c
-                    Log.d("BLE", "Found Write Characteristic: $uuid")
                 }
-                
-                // Notify characteristics: fee8 or fee3 (from your capture)
+
                 if (uuid.contains("fee8") || uuid.contains("fee3")) {
-                    Log.d("BLE", "Found Notify Characteristic: $uuid. Enabling...")
+                    Log.d("BLE", "Found Notify Char: $uuid. Enabling...")
                     gatt.setCharacteristicNotification(c, true)
                     c.getDescriptor(CONFIG_DESCRIPTOR)?.let {
                         enqueue(BleOp.WriteDescriptor(it, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
@@ -166,20 +162,11 @@ class BleManager(
             }
         }
 
-        if (writeCharacteristic == null) Log.e("BLE", "Write characteristic NOT FOUND")
         if (!foundNotify) {
-            Log.w("BLE", "Notify characteristic NOT FOUND. Forcing ready state.")
             signalReady()
         }
-        
-        operationFinished()
-    }
 
-    private fun enableNotifications(gatt: BluetoothGatt, char: BluetoothGattCharacteristic) {
-        gatt.setCharacteristicNotification(char, true)
-        char.getDescriptor(CONFIG_DESCRIPTOR)?.let {
-            enqueue(BleOp.WriteDescriptor(it, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
-        }
+        operationFinished()
     }
 
     private fun signalReady() {
@@ -207,7 +194,8 @@ class BleManager(
         val gatt = bluetoothGatt ?: return
 
         isBusy = true
-        mainHandler.postDelayed({ if (isBusy) { isBusy = false; processNext() } }, 5000)
+        // Faster watchdog for command queue (1.5s)
+        mainHandler.postDelayed({ if (isBusy) { isBusy = false; processNext() } }, 1500)
 
         try {
             when (op) {
@@ -233,8 +221,6 @@ class BleManager(
         val char = writeCharacteristic
         if (char != null) {
             enqueue(BleOp.WriteCharacteristic(char, data))
-        } else {
-            Log.e("BLE", "Cannot send: Write char missing")
         }
     }
 
@@ -242,12 +228,11 @@ class BleManager(
         if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
         val adapter = bluetoothAdapter ?: return
         if (!adapter.isEnabled) return
-        
+
         pendingMac = mac
         val device = adapter.getRemoteDevice(mac)
-        
+
         if (device.bondState == BluetoothDevice.BOND_NONE) {
-            Log.d("BLE", "Initiating pairing...")
             device.createBond()
         } else {
             startGattConnection(device)

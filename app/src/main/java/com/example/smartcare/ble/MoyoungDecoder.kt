@@ -17,9 +17,11 @@ object MoyoungDecoder {
     private var lastSteps = 0
     private var lastDistance = 0
     private var lastMovement = 0
+    private var lastHr = 0
     private var impactTime = 0L
     private var stepsAtImpact = 0
     private var distanceAtImpact = 0
+    private var hrAtImpact = 0
 
     fun decode(data: ByteArray): WatchUpdate? {
         if (data.size < 5 || data[0] != 0xFE.toByte()) return null
@@ -88,11 +90,20 @@ object MoyoungDecoder {
                     val subCmd = data[5].toInt() and 0xFF
                     if (subCmd == 0x03 && data.size >= 27) { // Workout detail response
                         try {
-                            val buffer = ByteBuffer.wrap(data, 23, 4)
-                            buffer.order(ByteOrder.LITTLE_ENDIAN)
-                            distance = buffer.int
+                            // Extract steps at index 19 (4 bytes)
+                            val stepsBuffer = ByteBuffer.wrap(data, 19, 4)
+                            stepsBuffer.order(ByteOrder.LITTLE_ENDIAN)
+                            steps = stepsBuffer.int
+                            lastSteps = steps
+
+                            // Extract distance at index 23 (4 bytes)
+                            val distBuffer = ByteBuffer.wrap(data, 23, 4)
+                            distBuffer.order(ByteOrder.LITTLE_ENDIAN)
+                            distance = distBuffer.int
                             lastDistance = distance
-                        } catch (_: Exception) {}
+                        } catch (e: Exception) {
+                            Log.e("MoyoungDecoder", "Error decoding B2 subcmd 03: ${e.message}")
+                        }
                     }
                 }
             }
@@ -110,33 +121,30 @@ object MoyoungDecoder {
             }
         }
 
-        // --- REFINED FALL DETECTION ---
+        // Fall Detection Logic
         val now = System.currentTimeMillis()
         var fallConfirmed = false
-        
-        // Calculate "Jerk": sudden change in movement intensity
         val movementJerk = Math.abs(movement - lastMovement)
-        
-        // Qualify Jerky Movement as Potential Fall:
-        // Either a massive spike (>=130) OR a sudden sharp jerk (>100 delta) while moving
-        if (movement >= 130 || (movementJerk > 100 && movement > 100)) {
+        if (movement >= 135 || (movementJerk > 110 && movement > 90)) {
             impactTime = now
             stepsAtImpact = steps
             distanceAtImpact = distance
-            Log.d("FallLogic", "Potential Jerky Impact: Move=$movement, Jerk=$movementJerk")
+            hrAtImpact = hr
         }
-
-        // Verify state after window
         if (impactTime > 0) {
             val elapsed = now - impactTime
-            if (elapsed in 4000..12000) {
-                // If neither steps nor distance have changed significantly, confirm fall
-                val distanceChanged = Math.abs(distance - distanceAtImpact) > 5 // 5 meters
-                if (steps <= stepsAtImpact + 1 && !distanceChanged) {
-                    fallConfirmed = true
-                    Log.d("FallLogic", "Fall Confirmed: Stationary for ${elapsed/1000}s")
+            val hrJump = if (hrAtImpact > 0 && hr > 0) (hr - hrAtImpact) >= 15 else false
+            if (elapsed in 2000..12000) {
+                val distanceChanged = Math.abs(distance - distanceAtImpact) > 5
+                val stepsChanged = steps > (stepsAtImpact + 2)
+                if (!stepsChanged && !distanceChanged) {
+                    if (hrJump || hr > 115) {
+                        fallConfirmed = true
+                    } else if (elapsed > 5000) {
+                        fallConfirmed = true
+                    }
                 } else {
-                    impactTime = 0 // User recovered/moved
+                    impactTime = 0
                 }
             } else if (elapsed > 12000) {
                 impactTime = 0
@@ -144,6 +152,7 @@ object MoyoungDecoder {
         }
         
         lastMovement = movement
+        if (hr > 0) lastHr = hr
         return WatchUpdate(hr, steps, movement, distance, fallConfirmed, hourlySteps)
     }
 }

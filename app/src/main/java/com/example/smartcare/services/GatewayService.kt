@@ -6,11 +6,13 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
 import android.os.Binder
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
@@ -43,6 +45,19 @@ class GatewayService : Service() {
     private val binder = LocalBinder()
     private var dataListener: OnDataUpdateListener? = null
 
+    private val reconnectRunnable = object : Runnable {
+        override fun run() {
+            if (!isConnected) {
+                val mac = prefs.getString("watch_mac", null)
+                if (!mac.isNullOrEmpty()) {
+                    Log.d("Gateway", "Auto-reconnect attempt for: $mac")
+                    bleManager.connect(mac)
+                }
+                mainHandler.postDelayed(this, 15000)
+            }
+        }
+    }
+
     interface OnDataUpdateListener {
         fun onDataUpdate(hr: Int, steps: Int, distance: Int, lat: Double, lng: Double, isFall: Boolean, connStatus: String)
     }
@@ -62,6 +77,7 @@ class GatewayService : Service() {
                 Log.d("Gateway", "Handshake Ready - Initializing Watch Configuration")
                 isConnected = true
                 connectionStateText = "Connected & Ready"
+                mainHandler.removeCallbacks(reconnectRunnable)
 
                 // Sequential commands
                 mainHandler.postDelayed({ bleManager.sendCommand(MoyoungEncoder.createHandshake()) }, 500)
@@ -81,6 +97,10 @@ class GatewayService : Service() {
                 if (!connected) {
                     currentHr = 0
                     showWatchDisconnectedNotification()
+                    mainHandler.removeCallbacks(reconnectRunnable)
+                    mainHandler.postDelayed(reconnectRunnable, 5000)
+                } else {
+                    mainHandler.removeCallbacks(reconnectRunnable)
                 }
                 relayData()
             },
@@ -207,28 +227,66 @@ class GatewayService : Service() {
     private fun showWatchDisconnectedNotification() {
         val channelId = "watch_status_channel"
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(channelId, "Watch Status", NotificationManager.IMPORTANCE_HIGH))
+        
+        val channel = NotificationChannel(channelId, "Watch Status", NotificationManager.IMPORTANCE_HIGH).apply {
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            setSound(Settings.System.DEFAULT_ALARM_ALERT_URI, audioAttributes)
+            enableVibration(true)
+        }
+        manager.createNotificationChannel(channel)
+
+        val fullScreenIntent = Intent(this, com.example.smartcare.ui.DashboardActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val fullScreenPendingIntent = PendingIntent.getActivity(this, 0, fullScreenIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("⚠️ WATCH DISCONNECTED")
             .setContentText("The wearer's smartwatch has gone offline.")
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .build()
+        
         try { manager.notify(3, notification) } catch (_: SecurityException) {}
     }
 
     private fun showFallNotification() {
         val channelId = "fall_alert_channel"
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(channelId, "Fall Alerts", NotificationManager.IMPORTANCE_HIGH))
+        
+        val channel = NotificationChannel(channelId, "Fall Alerts", NotificationManager.IMPORTANCE_HIGH).apply {
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            setSound(Settings.System.DEFAULT_ALARM_ALERT_URI, audioAttributes)
+            enableVibration(true)
+        }
+        manager.createNotificationChannel(channel)
+
+        val fullScreenIntent = Intent(this, com.example.smartcare.ui.DashboardActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val fullScreenPendingIntent = PendingIntent.getActivity(this, 0, fullScreenIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("⚠️ FALL DETECTED")
             .setContentText("Potential impact detected. Check wearer.")
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .build()
+            
         try { manager.notify(2, notification) } catch (_: SecurityException) {}
     }
 
@@ -256,6 +314,7 @@ class GatewayService : Service() {
     override fun onDestroy() { 
         timer?.cancel()
         locationTimer?.cancel()
+        mainHandler.removeCallbacks(reconnectRunnable)
         bleManager.cleanup()
         super.onDestroy() 
     }
