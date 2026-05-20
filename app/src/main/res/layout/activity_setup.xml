@@ -56,6 +56,8 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:hint="@string/hint_wearer_name"
+                    android:textColor="#FFFFFF"
+                    android:textColorHint="#757575"
                     android:inputType="textPersonName"
                     android:autofillHints="name"
                     android:layout_marginBottom="8dp"/>
@@ -65,8 +67,10 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:hint="@string/hint_emergency_phone"
+                    android:textColor="#FFFFFF"
+                    android:textColorHint="#757575"
                     android:autofillHints="phone"
-                    android:inputType="phone"/>
+                    android:inputType="phone" />
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 

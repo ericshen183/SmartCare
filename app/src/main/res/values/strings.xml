@@ -11,8 +11,12 @@
     <string name="status_detecting">Sensor Warming Up...</string>
     <string name="status_initializing">Initializing Watch...</string>
     <string name="status_scanning">Status: Scanning...</string>
+    <string name="status_connected">Connected</string>
+    <string name="motion_format">Motion: %1$d</string>
+    <string name="status_watch_paired">Watch paired successfully</string>
     <string name="linked_format">Linked: %1$s</string>
     <string name="tracking_device">Tracking Device...</string>
+    <string name="status_header_format">%1$s | %2$s (%3$s)</string>
     <string name="status_normal_short">Normal</string>
     <string name="real_time_hr">Real-time Heart Rate</string>
     <string name="watch_messaging">Watch Messaging</string>

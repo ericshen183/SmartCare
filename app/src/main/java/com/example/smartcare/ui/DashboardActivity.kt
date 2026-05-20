@@ -4,14 +4,12 @@ import android.content.ComponentName
 import android.content.Intent
 import android.content.ServiceConnection
 import android.graphics.Color
-import android.os.Bundle
-import android.os.IBinder
+import android.os.*
 import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.graphics.toColorInt
 import com.example.smartcare.R
-import com.example.smartcare.ble.MoyoungEncoder
 import com.example.smartcare.databinding.ActivityDashboardBinding
 import com.example.smartcare.services.GatewayService
 import com.google.android.gms.maps.*
@@ -24,6 +22,9 @@ class DashboardActivity : AppCompatActivity(), OnMapReadyCallback {
     private var wearerMarker: Marker? = null
     private var lastMapLat = 0.0
     private var lastMapLng = 0.0
+    private var lastUiHr = 0
+    private var lastPulseTime = 0L
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private var gatewayService: GatewayService? = null
     private var isBound = false
@@ -36,8 +37,8 @@ class DashboardActivity : AppCompatActivity(), OnMapReadyCallback {
             isBound = true
             
             s.setOnDataUpdateListener(object : GatewayService.OnDataUpdateListener {
-                override fun onDataUpdate(hr: Int, steps: Int, distance: Int, lat: Double, lng: Double, isFall: Boolean, connStatus: String) {
-                    runOnUiThread { updateUI(hr, steps, lat, lng, isFall, connStatus) }
+                override fun onDataUpdate(hr: Int, steps: Int, distance: Int, lat: Double, lng: Double, isFall: Boolean, connStatus: String, protocol: String, movement: Int) {
+                    runOnUiThread { updateUI(hr, steps, distance, lat, lng, isFall, connStatus, protocol, movement) }
                 }
             })
         }
@@ -102,14 +103,13 @@ class DashboardActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.btnSendNotification.setOnClickListener {
             val msg = binding.editNotification.text.toString()
             if (msg.isNotEmpty()) {
-                gatewayService?.sendWatchCommand(MoyoungEncoder.createNotification(msg))
+                gatewayService?.sendWatchNotification(msg)
                 binding.editNotification.text.clear()
                 Toast.makeText(this, "Message sent", Toast.LENGTH_SHORT).show()
             }
         }
         binding.btnSetAlarm.setOnClickListener {
-            val cmd = MoyoungEncoder.createAlarm(0, binding.alarmTimePicker.hour, binding.alarmTimePicker.minute)
-            gatewayService?.sendWatchCommand(cmd)
+            gatewayService?.setWatchAlarm(0, binding.alarmTimePicker.hour, binding.alarmTimePicker.minute)
             Toast.makeText(this, "Watch alarm set", Toast.LENGTH_SHORT).show()
         }
         binding.btnTestHr.setOnClickListener {
@@ -118,11 +118,25 @@ class DashboardActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    private fun updateUI(hr: Int, steps: Int, lat: Double, lng: Double, isFall: Boolean, connStatus: String) {
-        android.util.Log.d("DashboardUI", "Received HR: $hr, Status: $connStatus")
+    private fun updateUI(hr: Int, steps: Int, distance: Int, lat: Double, lng: Double, isFall: Boolean, connStatus: String, protocol: String, movement: Int) {
+        android.util.Log.d("DashboardUI", "Received Update. Status: $connStatus")
+        
+        val now = System.currentTimeMillis()
+        if (hr > 0 && (hr != lastUiHr || now - lastPulseTime > 10000)) {
+            animateHeartbeat()
+            lastUiHr = hr
+            lastPulseTime = now
+        }
+
         val hrDisplay = if (hr > 0) getString(R.string.bpm_format, hr) else getString(R.string.status_detecting)
         binding.hrText.text = hrDisplay
         binding.hrTextLarge.text = hrDisplay
+
+        binding.movementIntensity.text = getString(R.string.motion_format, movement)
+        if (movement >= 50) {
+            binding.movementIntensity.setTextColor(Color.RED)
+            mainHandler.postDelayed({ binding.movementIntensity.setTextColor("#000000".toColorInt()) }, 500)
+        }
 
         val fallText = if (isFall) getString(R.string.fall_detected) else getString(R.string.status_normal)
         val fallTextShort = if (isFall) getString(R.string.fall_detected) else getString(R.string.status_normal_short)
@@ -137,10 +151,11 @@ class DashboardActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.imgFall.setImageResource(if (isFall) android.R.drawable.ic_dialog_alert else android.R.drawable.ic_dialog_info)
         binding.tabFall.setBackgroundColor(if (isFall) "#B71C1C".toColorInt() else "#4CAF50".toColorInt())
 
-        // Update status header with connection status
+        // Update status header with connection status and protocol info
         val prefs = getSharedPreferences("smartcare_prefs", MODE_PRIVATE)
         val watchName = prefs.getString("watch_name", "Smartwatch") ?: "Smartwatch"
-        binding.txtStatusHeader.text = "$watchName | $connStatus"
+        val activityInfo = if (steps > 0) " | $steps Steps (${distance/1000.0}km)" else ""
+        binding.txtStatusHeader.text = "${watchName}${activityInfo}\n$connStatus ($protocol)"
 
         mMap?.let { map ->
             if (lat != 0.0 && lng != 0.0) {
@@ -149,9 +164,9 @@ class DashboardActivity : AppCompatActivity(), OnMapReadyCallback {
                     wearerMarker = map.addMarker(MarkerOptions().position(position).title(getString(R.string.marker_title_wearer)))
                     map.moveCamera(CameraUpdateFactory.newLatLngZoom(position, 17f))
                 } else {
-                    val distance = FloatArray(1)
-                    android.location.Location.distanceBetween(lastMapLat, lastMapLng, lat, lng, distance)
-                    if (distance[0] > 2) { // 2 meter threshold for movement
+                    val results = FloatArray(1)
+                    android.location.Location.distanceBetween(lastMapLat, lastMapLng, lat, lng, results)
+                    if (results[0] > 2) { // 2 meter threshold for movement
                         wearerMarker?.position = position
                         map.animateCamera(CameraUpdateFactory.newLatLng(position))
                     }
@@ -160,6 +175,21 @@ class DashboardActivity : AppCompatActivity(), OnMapReadyCallback {
                 lastMapLng = lng
             }
         }
+    }
+
+    private fun animateHeartbeat() {
+        binding.hrTextLarge.animate()
+            .scaleX(1.15f)
+            .scaleY(1.15f)
+            .setDuration(100)
+            .withEndAction {
+                binding.hrTextLarge.animate()
+                    .scaleX(1.0f)
+                    .scaleY(1.0f)
+                    .setDuration(150)
+                    .start()
+            }
+            .start()
     }
 
     override fun onMapReady(googleMap: GoogleMap) { mMap = googleMap }
