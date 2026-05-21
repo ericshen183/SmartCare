@@ -51,6 +51,7 @@ https://dl.google.com/android/repository/platform-tools-latest-windows.zip
 From here you can unzip the folder in any directory of your own choosing and copy its path into environmental variables:
 Copy the path
 <img width="763" height="576" alt="Screenshot 2026-05-21 111719" src="https://github.com/user-attachments/assets/a4177978-e45b-4620-b7eb-62a17613bc5b" />
+
 Open environmental variables\
 <img width="936" height="439" alt="Screenshot 2026-05-21 112019" src="https://github.com/user-attachments/assets/7f37fdd7-660e-4d69-b75a-3a63f6f9ed1c" />
 Name the variable by any name you want and paste the file path you had copied and remove the quotes.\
@@ -68,9 +69,11 @@ Ensure both the mobile device you want to connect and your pc/ computer are on t
 <img width="466" height="141" alt="Screenshot 2026-05-21 123254" src="https://github.com/user-attachments/assets/6dba402b-7de7-415d-b3f6-f9010a8bd865" />
 And select pair devices through wifi.\
 <img width="763" height="927" alt="image" src="https://github.com/user-attachments/assets/53cd5f68-fcb3-4738-8cda-81c29c39ea19" />
+
 From here you can go back to developer options, turn on wireless debugging and select to either connect through the QR code or Pairing code.
 
 ### Connected Device
 Now we can return to Android studio and we can see the device we connected listed here. We can now go ahead and start debugging which would start installing the application on your mobile device.\
 <img width="442" height="52" alt="image" src="https://github.com/user-attachments/assets/9210b30d-2243-48a6-b45c-3fa0867d46ad" />
+
 You can now test the application on your mobile device.
