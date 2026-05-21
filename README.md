@@ -39,6 +39,7 @@ Connecting your device to the Android Studio program can be through two ways.
 To be able to establish a connection through any of the methods mentioned above, developer mode must be enabled, first go into settings and scroll down
 until you see this:
 <img width="850" height="566" alt="image" src="https://github.com/user-attachments/assets/86e3e34b-79e1-4cd1-a7ec-f07936e029ac" />
+
 Click on about phone and navigate to software information
 <img width="702" height="562" alt="image" src="https://github.com/user-attachments/assets/4ea204cc-da2e-4ffe-9d22-35835055d053" />
 Then click on build number 7 times to start developer mode:
