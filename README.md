@@ -24,6 +24,7 @@ Next, install Android Studio to build and test the application.\
 From here, you can start the program and sign in to your Google account.
 Upon entering the application, select the directory you have just cloned\
 <img width="497" height="764" alt="Screenshot 2026-05-21 095840" src="https://github.com/user-attachments/assets/c123bf6b-3710-47ce-890d-2292714015a2" />
+
 Let Android Studio initialize the directory and you should be met with this\
 <img width="1221" height="877" alt="image" src="https://github.com/user-attachments/assets/3e9d960c-9f02-4b00-94c1-0265ab503080" />
 From this moment on most of the initial setup has been completed.
